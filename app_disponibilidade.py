@@ -332,136 +332,211 @@ disp = disponibilidades[
 ].copy()
 total = len(nomes_selecionados)
 
+# -----------------------------------------------------------------------------
+# Consulta detalhada: mostra todas as pessoas do grupo e separa quem marcou
+# disponibilidade de quem não marcou aquele intervalo.
+# -----------------------------------------------------------------------------
+st.subheader("Consultar pessoas por horário")
+st.caption(
+    "Escolha um dia e um intervalo para conferir exatamente quem, dentro "
+    "do grupo selecionado, marcou disponibilidade."
+)
+
+ordem_dias = list(DIAS.values())
+
+def chave_horario(horario):
+    """Retorna a hora inicial para ordenar intervalos como 8h-9h."""
+    correspondencia = re.match(r"^(\d+)h", str(horario))
+    return int(correspondencia.group(1)) if correspondencia else 99
+
+# A lista de horários usa todas as respostas carregadas, não apenas o grupo
+# filtrado. Assim, também é possível consultar horários em que ninguém do
+# grupo selecionado marcou disponibilidade.
+horarios_disponiveis_na_planilha = sorted(
+    disponibilidades["Horário"].dropna().astype(str).unique().tolist(),
+    key=chave_horario
+)
+
+if not horarios_disponiveis_na_planilha:
+    st.warning(
+        "Não foram encontrados horários válidos no arquivo. "
+        "Confira se as respostas seguem o formato 8h-9h."
+    )
+else:
+    col_dia, col_horario = st.columns(2)
+    with col_dia:
+        dia_consulta = st.selectbox(
+            "Dia da semana",
+            ordem_dias,
+            key="consulta_detalhada_dia"
+        )
+    with col_horario:
+        horario_consulta = st.selectbox(
+            "Horário",
+            horarios_disponiveis_na_planilha,
+            key="consulta_detalhada_horario"
+        )
+
+    nomes_disponiveis = set(
+        disp.loc[
+            (disp["Dia"] == dia_consulta)
+            & (disp["Horário"] == horario_consulta),
+            "Nome"
+        ].unique()
+    )
+    lista_disponiveis = sorted(nomes_disponiveis)
+    lista_nao_disponiveis = sorted(
+        set(nomes_selecionados) - nomes_disponiveis
+    )
+
+    metrica_disponiveis, metrica_nao_disponiveis, metrica_total = st.columns(3)
+    metrica_disponiveis.metric(
+        "Marcaram disponibilidade",
+        len(lista_disponiveis)
+    )
+    metrica_nao_disponiveis.metric(
+        "Não marcaram disponibilidade",
+        len(lista_nao_disponiveis)
+    )
+    metrica_total.metric("Pessoas no grupo", total)
+
+    coluna_disponiveis, coluna_nao_disponiveis = st.columns(2)
+    with coluna_disponiveis:
+        st.markdown("#### ✅ Disponíveis")
+        if lista_disponiveis:
+            st.dataframe(
+                pd.DataFrame({"Nome": lista_disponiveis}),
+                use_container_width=True,
+                hide_index=True,
+                height=min(420, 38 * len(lista_disponiveis) + 40)
+            )
+        else:
+            st.info("Ninguém do grupo marcou esse horário.")
+
+    with coluna_nao_disponiveis:
+        st.markdown("#### ❌ Não disponíveis")
+        if lista_nao_disponiveis:
+            st.dataframe(
+                pd.DataFrame({"Nome": lista_nao_disponiveis}),
+                use_container_width=True,
+                hide_index=True,
+                height=min(420, 38 * len(lista_nao_disponiveis) + 40)
+            )
+        else:
+            st.success("Todas as pessoas do grupo marcaram esse horário.")
+
+    st.caption(
+        "‘Não disponíveis’ significa que essas pessoas não marcaram esse "
+        "intervalo no formulário; não significa necessariamente que tenham "
+        "registrado uma justificativa de indisponibilidade."
+    )
+
+# -----------------------------------------------------------------------------
+# Ranking geral dos horários e mapa semanal.
+# -----------------------------------------------------------------------------
 st.subheader("Melhores horários")
 st.write(
     f"Contagem considerando **{total} pessoa(s)** selecionada(s). "
     "Os horários são intervalos de uma hora."
 )
 
+ranking = pd.DataFrame(
+    columns=["Dia", "Horário", "Pessoas disponíveis", "Percentual"]
+)
+
 if disp.empty:
-    st.warning("Nenhuma disponibilidade encontrada para essa seleção.")
-    st.stop()
-
-ranking = (
-    disp.groupby(["Dia", "Horário"])["Nome"]
-    .nunique()
-    .rename("Pessoas disponíveis")
-    .reset_index()
-)
-ranking["Percentual"] = (
-    ranking["Pessoas disponíveis"] / total * 100
-)
-
-ordem_dias = list(DIAS.values())
-ranking["Dia"] = pd.Categorical(
-    ranking["Dia"],
-    categories=ordem_dias,
-    ordered=True
-)
-ranking["_hora"] = (
-    ranking["Horário"].str.extract(r"^(\d+)h").astype(int)
-)
-ranking = ranking.sort_values(
-    ["Pessoas disponíveis", "Dia", "_hora"],
-    ascending=[False, True, True]
-).drop(columns="_hora")
-
-maximo = int(ranking["Pessoas disponíveis"].max())
-melhores = ranking[
-    ranking["Pessoas disponíveis"] == maximo
-]
-
-c1, c2 = st.columns(2)
-c1.metric(
-    "Maior número de pessoas disponíveis",
-    f"{maximo} de {total}"
-)
-c2.metric(
-    "Quantidade de horários empatados no máximo",
-    len(melhores)
-)
-
-st.dataframe(
-    ranking.assign(
-        Dia=ranking["Dia"].astype(str),
-        **{
-            "Disponibilidade": ranking["Percentual"].map(
-                lambda valor: f"{valor:.0f}%"
-            )
-        }
-    )[[
-        "Dia",
-        "Horário",
-        "Pessoas disponíveis",
-        "Disponibilidade"
-    ]],
-    use_container_width=True,
-    hide_index=True
-)
-
-st.subheader("Mapa de disponibilidade")
-matriz = ranking.pivot(
-    index="Dia",
-    columns="Horário",
-    values="Pessoas disponíveis"
-)
-matriz = matriz.reindex(ordem_dias)
-
-horarios_ordenados = sorted(
-    matriz.columns,
-    key=lambda horario: int(horario.split("h")[0])
-)
-matriz = (
-    matriz.reindex(columns=horarios_ordenados)
-    .fillna(0)
-    .astype(int)
-)
-st.dataframe(
-    matriz,
-    use_container_width=True
-)
-
-with st.expander("Ver quem está disponível em cada horário"):
-    dia_escolhido = st.selectbox("Dia", ordem_dias)
-
-    horarios_dia = sorted(
-        disp.loc[
-            disp["Dia"] == dia_escolhido,
-            "Horário"
-        ].unique(),
-        key=lambda horario: int(horario.split("h")[0])
+    st.warning(
+        "Nenhuma pessoa do grupo selecionado marcou disponibilidade. "
+        "A consulta detalhada acima continua disponível para verificar os nomes."
+    )
+else:
+    ranking = (
+        disp.groupby(["Dia", "Horário"])["Nome"]
+        .nunique()
+        .rename("Pessoas disponíveis")
+        .reset_index()
+    )
+    ranking["Percentual"] = (
+        ranking["Pessoas disponíveis"] / total * 100
     )
 
-    if not horarios_dia:
-        st.info("Ninguém da seleção está disponível nesse dia.")
-    else:
-        horario_escolhido = st.selectbox(
+    ranking["Dia"] = pd.Categorical(
+        ranking["Dia"],
+        categories=ordem_dias,
+        ordered=True
+    )
+    ranking["_hora"] = ranking["Horário"].map(chave_horario)
+    ranking = ranking.sort_values(
+        ["Pessoas disponíveis", "Dia", "_hora"],
+        ascending=[False, True, True]
+    ).drop(columns="_hora")
+
+    maximo = int(ranking["Pessoas disponíveis"].max())
+    melhores = ranking[
+        ranking["Pessoas disponíveis"] == maximo
+    ]
+
+    c1, c2 = st.columns(2)
+    c1.metric(
+        "Maior número de pessoas disponíveis",
+        f"{maximo} de {total}"
+    )
+    c2.metric(
+        "Quantidade de horários empatados no máximo",
+        len(melhores)
+    )
+
+    st.dataframe(
+        ranking.assign(
+            Dia=ranking["Dia"].astype(str),
+            **{
+                "Disponibilidade": ranking["Percentual"].map(
+                    lambda valor: f"{valor:.0f}%"
+                )
+            }
+        )[[
+            "Dia",
             "Horário",
-            horarios_dia
-        )
-        presentes = disp[
-            (disp["Dia"] == dia_escolhido)
-            & (disp["Horário"] == horario_escolhido)
-        ]
+            "Pessoas disponíveis",
+            "Disponibilidade"
+        ]],
+        use_container_width=True,
+        hide_index=True
+    )
 
-        st.write(f"**{len(presentes)} pessoa(s):**")
-        st.write(
-            ", ".join(sorted(presentes["Nome"].unique()))
-            if not presentes.empty
-            else "Ninguém."
-        )
+    st.subheader("Mapa de disponibilidade")
+    matriz = ranking.pivot(
+        index="Dia",
+        columns="Horário",
+        values="Pessoas disponíveis"
+    )
+    matriz = matriz.reindex(ordem_dias)
+    horarios_ordenados = sorted(
+        matriz.columns,
+        key=chave_horario
+    )
+    matriz = (
+        matriz.reindex(columns=horarios_ordenados)
+        .fillna(0)
+        .astype(int)
+    )
+    st.dataframe(
+        matriz,
+        use_container_width=True
+    )
 
-csv_saida = (
-    ranking.assign(Dia=ranking["Dia"].astype(str))
-    .to_csv(index=False)
-    .encode("utf-8-sig")
-)
-st.download_button(
-    "Baixar ranking em CSV",
-    csv_saida,
-    "ranking_disponibilidade.csv",
-    "text/csv"
-)
+if not ranking.empty:
+    csv_saida = (
+        ranking.assign(Dia=ranking["Dia"].astype(str))
+        .to_csv(index=False)
+        .encode("utf-8-sig")
+    )
+    st.download_button(
+        "Baixar ranking em CSV",
+        csv_saida,
+        "ranking_disponibilidade.csv",
+        "text/csv"
+    )
 
 with st.expander("Observações sobre os dados"):
     st.write(
